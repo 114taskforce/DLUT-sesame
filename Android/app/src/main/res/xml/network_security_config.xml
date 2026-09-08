@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  门禁接口是 http://,局域网里的 ESP32 设备也只能明文 HTTP(设备算力有限,不提供 HTTPS)。
+
+  注意:Android 的 network security config **不匹配 IP 字面量**,写
+  <domain>192.168.4.1</domain> 是不生效的,所以只能放开 base-config。
+  实际影响可控:本 App 只连三类地址 —— sso.dlut.edu.cn(仍是 HTTPS,不受此开关影响)、
+  menjin.dlut.edu.cn(明文接口)、以及用户自己填的设备地址。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">sso.dlut.edu.cn</domain>
+    </domain-config>
+</network-security-config>
