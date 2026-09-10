@@ -31,6 +31,11 @@ class SettingsStore(context: Context) {
         get() = sp.getBoolean(KEY_KEEP_BACKGROUND, true)
         set(v) = sp.edit().putBoolean(KEY_KEEP_BACKGROUND, v).apply()
 
+    /** 使用 WebVPN:开=先登录 webvpn.dlut.edu.cn 再访问门禁(校外时打开);关=直连门禁 */
+    var useVpn: Boolean
+        get() = sp.getBoolean(KEY_USE_VPN, false)
+        set(v) = sp.edit().putBoolean(KEY_USE_VPN, v).apply()
+
     /** 上次自动开门时间戳(毫秒),用于 30 秒去重 */
     var lastAutoOpenAt: Long
         get() = sp.getLong(KEY_LAST_AUTO_OPEN, 0L)
@@ -101,6 +106,7 @@ class SettingsStore(context: Context) {
         const val KEY_DEVICE_CODE = "device_code"
         const val KEY_AUTO_OPEN = "auto_open"
         const val KEY_KEEP_BACKGROUND = "keep_background"
+        const val KEY_USE_VPN = "use_vpn"
         const val KEY_LAST_AUTO_OPEN = "last_auto_open_at"
         const val KEY_LAST_LOGIN = "last_login_at"
         const val KEY_COOKIES = "cookies"

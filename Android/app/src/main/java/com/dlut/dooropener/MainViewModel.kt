@@ -29,6 +29,7 @@ data class UiState(
     val deviceCode: String = "",
     val autoOpen: Boolean = false,
     val keepBackground: Boolean = true,
+    val useVpn: Boolean = false,
     // 状态
     val status: String = "就绪",
     val statusKind: StatusKind = StatusKind.IDLE,
@@ -66,6 +67,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             deviceCode = settings.deviceCode,
             autoOpen = settings.autoOpen,
             keepBackground = settings.keepBackground,
+            useVpn = settings.useVpn,
             webCookieRecorded = settings.hasWebCookie(),
             deviceIp = settings.deviceIp,
             devicePin = settings.devicePin,
@@ -85,6 +87,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun onAutoOpenChange(v: Boolean) { settings.autoOpen = v; _uiState.update { it.copy(autoOpen = v) } }
 
     fun onKeepBackgroundChange(v: Boolean) { settings.keepBackground = v; _uiState.update { it.copy(keepBackground = v) } }
+
+    /**
+     * 切换 WebVPN:两种模式的 token 属于不同的域,切完立刻按新模式登一次,
+     * 让用户当场看到「VPN 是否打得开」,不用等下一次开门才知道。
+     */
+    fun onUseVpnChange(v: Boolean) {
+        settings.useVpn = v
+        _uiState.update { it.copy(useVpn = v) }
+        if (!settings.hasCredentials()) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    status = if (v) "正在打开 WebVPN…" else "正在切回直连…",
+                    statusKind = StatusKind.BUSY,
+                )
+            }
+            val r = try {
+                withContext(Dispatchers.IO) { loginFresh(settings.account, settings.password, force = true) }
+                (if (v) "WebVPN 已登录,可校外开门" else "已切回直连") to true
+            } catch (e: Exception) {
+                Log.w("DoorVM", "切换 VPN 后登录失败:${e.message}")
+                "登录失败:${e.message}" to false
+            }
+            _uiState.update {
+                it.copy(status = r.first, statusKind = if (r.second) StatusKind.SUCCESS else StatusKind.FAIL)
+            }
+        }
+    }
 
     /** 供 Activity 在返回键/退出时读取(不进 UiState 的时机也可用) */
     fun keepBackgroundEnabled(): Boolean = settings.keepBackground
@@ -386,11 +416,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ==================== 开门 ====================
 
-    /** 打开 APP 时若开关打开,自动触发一次开门(30 秒内去重,防旋转/快速重开重复触发) */
+    /** 打开 APP 时若开关打开,自动触发一次开门(10 秒内去重,防误触/连续启动重复触发) */
     fun autoOpenIfNeeded() {
         if (!settings.autoOpen) return
         if (!settings.hasCredentials()) return
-        if (System.currentTimeMillis() - settings.lastAutoOpenAt < 30_000) return
+        if (System.currentTimeMillis() - settings.lastAutoOpenAt < 10_000) return
         settings.lastAutoOpenAt = System.currentTimeMillis()
         openDoor()
     }

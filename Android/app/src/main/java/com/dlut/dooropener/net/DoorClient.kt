@@ -6,6 +6,7 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.FormBody
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
@@ -43,6 +44,23 @@ class DoorClient(
         const val SSO_BASE = "https://sso.dlut.edu.cn"
         const val SERVICE = "http://menjin.dlut.edu.cn/cser/static/menjin/index.html"
         const val MENJIN_BASE = "http://menjin.dlut.edu.cn"
+        const val MENJIN_HOST = "menjin.dlut.edu.cn"
+
+        // ==================== WebVPN(校外访问,对应 open_door_puppeteer.js) ====================
+        // 网关的 /http/<enc>/ 路径在校外会把请求代理到门禁;校园网内则 302 回真实地址。
+        // 但它只认自家登录入口(/login?cas_login=true)换来的票据,直接访问门禁站点换不到。
+
+        const val VPN_BASE = "https://webvpn.dlut.edu.cn"
+        const val VPN_HOST = "webvpn.dlut.edu.cn"
+
+        /** 门禁站点在网关里的加密路径段(脚本同款常量,站点不变则不变) */
+        const val VPN_ENC = "57787a7876706e323032336b65794024751d0c12f50ddd4aa659ee7694bf90698d72"
+
+        /** WebVPN 自身的登录入口:302 到 CAS(service 指向网关) */
+        const val VPN_LOGIN_ENTRY = "$VPN_BASE/login?cas_login=true"
+
+        /** 发往网关时用的浏览器 UA(与 open_door_puppeteer.js 一致;网关按 UA 判断是否下发会话 cookie) */
+        const val VPN_BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
         const val PROJECT_CD = "DA_LIAN_LI_GONG_MENJIN"
 
@@ -141,7 +159,14 @@ class DoorClient(
 
         override fun loadForRequest(url: HttpUrl): List<Cookie> {
             val now = System.currentTimeMillis()
-            return store.filter { it.expiresAt > now }.filter { it.matches(url) }
+            val alive = store.filter { it.expiresAt > now }
+            // VPN 透明模式:走网关时,门禁下发的 cookie(域=menjin、路径如 /cser)按普通规则
+            // 一条都匹配不上(网关路径是 /http/<enc>/cser/...),但网关会把它们原样转交给门禁,
+            // 所以两个域的 cookie 全都带上
+            if (useVpn && url.host == VPN_HOST) {
+                return alive.filter { it.domain == MENJIN_HOST || it.domain == VPN_HOST }
+            }
+            return alive.filter { it.matches(url) }
         }
 
         fun get(host: String, name: String): String? =
@@ -156,6 +181,9 @@ class DoorClient(
         }
 
         fun clearAll() = store.clear()
+
+        /** 清掉某个域的 cookie(网关票据与客户端会话绑定,换网络后旧票据会失效) */
+        fun clearHost(host: String) = store.removeAll { it.domain == host || it.domain == ".$host" }
 
         fun serialize(): String {
             val arr = JSONArray()
@@ -203,13 +231,40 @@ class DoorClient(
 
     // ==================== 接口地址 ====================
 
-    private fun indexUrl() = "$MENJIN_BASE/cser/static/menjin/index.html"
+    /** 是否走 WebVPN(开关即读,切换后立即生效) */
+    private val useVpn: Boolean get() = settings.useVpn
+
+    /** WebVPN 代理地址:同一份门禁路径,换个入口域名 */
+    private fun vpnUrl(path: String) = "$VPN_BASE/http/$VPN_ENC$path"
+
+    /** 门禁真实地址 → WebVPN 代理地址(VPN 模式下门禁的每个请求都从网关过) */
+    private fun viaVpn(url: String): String {
+        if (!useVpn) return url
+        val u = url.toHttpUrlOrNull() ?: return url
+        if (u.host != MENJIN_HOST) return url
+        val query = u.encodedQuery?.let { "?$it" } ?: ""
+        return vpnUrl(u.encodedPath + query)
+    }
+
+    private fun indexUrl() = viaVpn("$MENJIN_BASE/cser/static/menjin/index.html")
 
     /** 开门接口 */
-    private fun openUrl() = "$MENJIN_BASE/cser/device/info/command/sendRoomBatch"
+    private fun openUrl() = viaVpn("$MENJIN_BASE/cser/device/info/command/sendRoomBatch")
 
     /** 设备列表接口 */
-    private fun listUrl() = "$MENJIN_BASE/cser/medium/device/listWithRoom"
+    private fun listUrl() = viaVpn("$MENJIN_BASE/cser/medium/device/listWithRoom")
+
+    /**
+     * 发往网关的请求装成浏览器:网关按 UA 与来路判断是不是"浏览器在访问",
+     * 只有浏览器形态的请求它才带上门禁会话(open_door_puppeteer.js 的 fetch 就是从
+     * 网关页面发出的、UA 也是完整浏览器串)。不在 VPN 模式或目标不是网关时原样返回。
+     */
+    private fun browserize(b: Request.Builder, url: String): Request.Builder {
+        if (!useVpn || url.toHttpUrlOrNull()?.host != VPN_HOST) return b
+        return b.header("User-Agent", VPN_BROWSER_UA)
+            .header("Origin", VPN_BASE)
+            .header("Referer", url)
+    }
 
     val client: OkHttpClient = run {
         val builder = OkHttpClient.Builder()
@@ -242,7 +297,12 @@ class DoorClient(
     // ==================== Token ====================
 
     /** 当前 jar 中的 shfb-token(可能已失效,失效时重新登录) */
-    fun currentToken(): String? = cookieJar.get("menjin.dlut.edu.cn", "shfb-token")
+    fun currentToken(): String? {
+        val menjin = cookieJar.get(MENJIN_HOST, "shfb-token")
+        if (!useVpn) return menjin
+        // VPN 模式下 token 落在网关域(网关代理)或门禁域(网关直连跳转),两处都认
+        return cookieJar.get(VPN_HOST, "shfb-token") ?: menjin
+    }
 
     fun persistCookies() = settings.saveCookieJar(cookieJar.serialize())
 
@@ -268,6 +328,9 @@ class DoorClient(
         // STEP0 预置信任设备 cookie(固件 COOKIE_INPUT 等价;为空则等效裸登录)
         preloadWebCookies()
 
+        // VPN 模式:先打开 WebVPN,之后门禁请求才会被网关代理/放行
+        if (useVpn) vpnOpenSession(username, password)
+
         val loginUrl = "$SSO_BASE/cas/login?service=$SERVICE"
 
         // STEP1 获取登录页 —— 仿固件:不自动跟随重定向,手动处理 Location。
@@ -279,9 +342,10 @@ class DoorClient(
             val loc = r.header("Location")?.let { raw -> r.request.url.resolve(raw) }
             page = when {
                 // 被 302(无论是否门禁站):手动访问目标地址拿响应
+                // (VPN 模式下门禁地址要换成网关地址,否则校外连不上真实域名)
                 loc != null -> {
                     Log.i(TAG, "STEP1 GET 登录页被 302 → $loc")
-                    get(loc.toString())
+                    get(viaVpn(loc.toString()))
                 }
                 else -> r.body?.string() ?: ""
             }
@@ -301,15 +365,7 @@ class DoorClient(
             Log.i(TAG, "STEP2 rsa 已生成(len=${rsa.length})")
 
             // STEP3 POST 登录
-            val body = FormBody.Builder()
-                .add("rsa", rsa)
-                .add("ul", username.length.toString())
-                .add("pl", password.length.toString())
-                .add("sl", "0")
-                .add("lt", lt)
-                .add("execution", execution)
-                .add("_eventId", "submit")
-                .build()
+            val body = casForm(rsa, username, password, lt, execution)
 
             // STEP3 POST 登录 —— 与固件一致:不自动跟随重定向,手动读 Location 判断
             // (OkHttp 自动跟随时曾观察到 200 空响应体停在 sso,看不到服务端真实指示)
@@ -375,7 +431,7 @@ class DoorClient(
                     )
                 }
                 // STEP4 手动访问 ticket 回跳地址,换取门禁会话(等价固件 httpGET(location))
-                get(target.toString())
+                get(viaVpn(target.toString()))
             }
         }
         // 无 lt/execution:信任设备 cookie 已让 CAS 直接放行,无需表单登录
@@ -393,6 +449,107 @@ class DoorClient(
         Log.i(TAG, "STEP5 拿到 token(len=${token.length})")
         return token
     }
+
+    /**
+     * 打开 WebVPN(对应 open_door_puppeteer.js 的 webvpn 登录分支):
+     * GET 登录入口 → 302 到 CAS(service 指向网关)→ 表单登录 → 回网关把票据升级为已认证。
+     * 网关只认它自己登录入口换来的票据,拿着票再去请求 /http/<enc>/ 才会被代理到门禁。
+     * 信任 cookie(CASTGC)有效时全程透明 302,无需二次认证。
+     */
+    private fun vpnOpenSession(username: String, password: String) {
+        // 网关票据与客户端会话绑定:换网络(校园网↔流量)或票据过期后,旧 cookie 会让入口直接 500,
+        // 所以入口失败时先清掉网关域的 cookie 再来一次
+        val (casUrl, _) = tryGetFollowing(VPN_LOGIN_ENTRY) ?: run {
+            Log.w(TAG, "VPN 入口失败,清空网关 cookie 后重试")
+            clearVpnCookies()
+            getFollowing(VPN_LOGIN_ENTRY)
+        }
+        Log.i(TAG, "VPN STEP1 登录入口 → $casUrl")
+        if (!casUrl.startsWith(SSO_BASE)) return   // 已有网关会话(票据仍然有效)
+
+        // 与直连同一套 CAS 流程,只是 service 指向网关;信任 cookie 有效时这里直接被 302 回门户
+        val page = get(casUrl)
+        val lt = extract(page, "name=\"lt\" value=\"", "\"")
+        val execution = extract(page, "name=\"execution\" value=\"", "\"")
+        if (lt.isEmpty() || execution.isEmpty()) {
+            Log.i(TAG, "VPN STEP2 无需表单登录(信任 cookie 已放行)")
+            return
+        }
+
+        val rsa = DesCipher.strEnc(username + password + lt)
+        client.newBuilder().followRedirects(false).build().newCall(
+            Request.Builder()
+                .url(casUrl)
+                .header("User-Agent", USER_AGENT)
+                .header("Origin", SSO_BASE)
+                .header("Referer", casUrl)
+                .post(casForm(rsa, username, password, lt, execution))
+                .build()
+        ).execute().use { resp ->
+            val location = resp.header("Location")
+            Log.i(TAG, "VPN STEP3 POST code=${resp.code} Location=$location")
+            if (location == null) {
+                // 出错提示与直连流程保持一致:含 lt 的是重新渲染的登录表单(错误在 #errormsghide),
+                // 不含的是短信/动态码二阶段页
+                val body = resp.body?.string().orEmpty()
+                val isFormPage = body.contains("name=\"lt\"")
+                val serverErr = if (isFormPage) {
+                    Regex("id=\"errormsghide\"[^>]*>([^<]{1,200})<")
+                        .find(body)?.groupValues?.get(1)?.trim().orEmpty()
+                } else {
+                    ""
+                }
+                throw LoginException(
+                    when {
+                        !isFormPage -> "账密已通过,需短信二次认证(可在设置页网页登录一次)"
+                        serverErr.isNotEmpty() -> "WebVPN 登录被拒绝:$serverErr"
+                        else -> "WebVPN 登录被拒绝(服务端无提示,可能账号或密码错误)"
+                    },
+                    needWebLogin = true,
+                )
+            }
+            // 回网关:票据在这里被升级为已认证
+            get(resp.request.url.resolve(location)!!.toString())
+        }
+        Log.i(TAG, "VPN STEP4 网关已登录,cookies=${cookieSummary()}")
+    }
+
+    /** GET 并跟随重定向,返回 (最终地址, 页面正文);非 2xx 带实际地址与响应片段抛错 */
+    private fun getFollowing(url: String): Pair<String, String> =
+        client.newCall(browserize(Request.Builder().url(url).header("User-Agent", USER_AGENT), url).build())
+            .execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    val snippet = (resp.body?.string() ?: "").replace(Regex("\\s+"), " ").take(200)
+                    throw IOException("HTTP ${resp.code} @ ${resp.request.url} $snippet")
+                }
+                resp.request.url.toString() to (resp.body?.string() ?: "")
+            }
+
+    /** getFollowing 的容错版:失败只记日志,返回 null */
+    private fun tryGetFollowing(url: String): Pair<String, String>? = try {
+        getFollowing(url)
+    } catch (e: Exception) {
+        Log.w(TAG, "GET $url 失败:${e.message}")
+        null
+    }
+
+    /** 清掉网关域 cookie(票据绑定客户端状态,换网络后重登前先丢弃) */
+    private fun clearVpnCookies() {
+        cookieJar.clearHost(VPN_HOST)
+        persistCookies()
+    }
+
+    /** CAS 登录表单(与固件一致;rsa 由调用方加密,便于日志记录长度) */
+    private fun casForm(rsa: String, account: String, password: String, lt: String, execution: String) =
+        FormBody.Builder()
+            .add("rsa", rsa)
+            .add("ul", account.length.toString())
+            .add("pl", password.length.toString())
+            .add("sl", "0")
+            .add("lt", lt)
+            .add("execution", execution)
+            .add("_eventId", "submit")
+            .build()
 
     /** 把网页登录保存的 cookie 预置进 jar(固件 login() 开头的 cookieJar=COOKIE_INPUT) */
     private fun preloadWebCookies() {
@@ -454,16 +611,27 @@ class DoorClient(
             .add("token", token)
             .build()
 
-        val resp = client.newCall(
+        val url = openUrl()
+        val req = browserize(
             Request.Builder()
-                .url(openUrl())
+                .url(url)
                 .header("User-Agent", USER_AGENT)
                 .header("AUTH-SIGN", sign)
                 .header("AUTH-TIMESTAMP", ts)
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .post(body)
-                .build()
-        ).execute()
+                .header("Content-Type", "application/x-www-form-urlencoded"),
+            url,
+        ).post(body).build()
+
+        // VPN 模式:网关在校园网内会把请求 302 回门禁真实域名,OkHttp 跟随会把 POST 降级成 GET,
+        // 所以在 Location 上原样重发(校外时网关直接代理,不会走到这里)
+        var resp = client.newCall(req).execute()
+        val redirect = if (useVpn && resp.code in 300..399) resp.header("Location") else null
+        val target = redirect?.let { req.url.resolve(it) }
+        if (target != null) {
+            resp.close()
+            Log.i(TAG, "开门请求被网关重定向 → ${target.host},按真实地址重发")
+            resp = client.newCall(req.newBuilder().url(target).build()).execute()
+        }
         resp.use {
             val text = it.body?.string() ?: ""
             Log.i(TAG, "开门请求: code=${it.code} body=${text.take(300)}")
@@ -499,21 +667,31 @@ class DoorClient(
         var finalUrl = ""
         var lastError: IOException? = null
         try {
-            client.newCall(
+            val url = listUrl()
+            val req = browserize(
                 Request.Builder()
-                    .url(listUrl())
+                    .url(url)
                     .header("User-Agent", USER_AGENT)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .header("AUTH-SIGN", sign)
                     .header("AUTH-TIMESTAMP", ts)
                     .header("Origin", MENJIN_BASE)
-                    .header("Referer", "$MENJIN_BASE/cser/static/menjin/mine.html")
-                    .post(form)
-                    .build()
-            ).execute().use { resp ->
-                code = resp.code
-                finalUrl = resp.request.url.toString()
-                text = resp.body?.string()
+                    .header("Referer", "$MENJIN_BASE/cser/static/menjin/mine.html"),
+                url,
+            ).post(form).build()
+            var resp = client.newCall(req).execute()
+            // 同开门接口:VPN 模式下网关 302 回真实域名时原样重发 POST,别被降级成 GET
+            val redirect = if (useVpn && resp.code in 300..399) resp.header("Location") else null
+            val target = redirect?.let { req.url.resolve(it) }
+            if (target != null) {
+                resp.close()
+                Log.i(TAG, "设备列表被网关重定向 → ${target.host},按真实地址重发")
+                resp = client.newCall(req.newBuilder().url(target).build()).execute()
+            }
+            resp.use { r ->
+                code = r.code
+                finalUrl = r.request.url.toString()
+                text = r.body?.string()
                 // 会话过期时服务器会 302 到 CAS(最终 URL 不再是 menjin),这里记录下来便于排查
                 Log.i(TAG, "设备列表响应: code=$code 最终URL=$finalUrl body=${text?.take(200)}")
             }
@@ -547,7 +725,8 @@ class DoorClient(
             .joinToString("")
 
     private fun get(url: String): String {
-        client.newCall(Request.Builder().url(url).header("User-Agent", USER_AGENT).build())
+        val req = browserize(Request.Builder().url(url).header("User-Agent", USER_AGENT), url)
+        client.newCall(req.build())
             .execute().use { resp ->
                 if (!resp.isSuccessful) throw IOException("HTTP ${resp.code} @ $url")
                 return resp.body?.string() ?: ""

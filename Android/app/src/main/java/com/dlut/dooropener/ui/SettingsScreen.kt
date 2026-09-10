@@ -55,6 +55,7 @@ fun SettingsScreen(
     onDeviceCodeChange: (String) -> Unit,
     onAutoOpenChange: (Boolean) -> Unit,
     onKeepBackgroundChange: (Boolean) -> Unit,
+    onUseVpnChange: (Boolean) -> Unit,
     onFetchDevices: () -> Unit,
     onSelectDevice: (String) -> Unit,
     onDismissCandidates: () -> Unit,
@@ -167,6 +168,22 @@ fun SettingsScreen(
                     )
                 }
                 Switch(checked = state.keepBackground, onCheckedChange = onKeepBackgroundChange)
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("使用 WebVPN", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "开启后先登录 webvpn.dlut.edu.cn 再访问门禁(校外/不在校园网时打开);" +
+                            "关闭时直连门禁,不尝试打开 VPN",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = state.useVpn, onCheckedChange = onUseVpnChange)
             }
 
             HorizontalDivider()
@@ -336,7 +353,7 @@ fun SettingsScreen(
                 Column(Modifier.weight(1f)) {
                     Text("关于", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        "GitHub: 114taskforce/DLUT-door-opener",
+                        "GitHub: 114taskforce/DLUT-sesame",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

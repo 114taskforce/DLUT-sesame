@@ -24,8 +24,18 @@ class MainActivity : ComponentActivity() {
     /** 跳转外部浏览器(关于页链接)的标记:同样不算退出应用 */
     private var launchingExternal = false
 
+    /** 旋转/系统重建恢复的这一次前台不算「重新打开 App」,不补自动开门 */
+    private var restoredFromSavedState = false
+
+    /** 进程启动后的第一次 onResume:冷启动也算「打开 App」 */
+    private var firstResume = true
+
+    /** Activity 真正离开过前台(切到别的应用等);下拉通知栏、权限弹窗这类不会触发 onStop */
+    private var wentToBackground = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        restoredFromSavedState = savedInstanceState != null
         setContent {
             DoorAppTheme {
                 val state by vm.uiState.collectAsState()
@@ -39,6 +49,7 @@ class MainActivity : ComponentActivity() {
                         onDeviceCodeChange = vm::onDeviceCodeChange,
                         onAutoOpenChange = vm::onAutoOpenChange,
                         onKeepBackgroundChange = vm::onKeepBackgroundChange,
+                        onUseVpnChange = vm::onUseVpnChange,
                         onFetchDevices = vm::fetchDevices,
                         onSelectDevice = vm::selectDevice,
                         onDismissCandidates = vm::dismissCandidates,
@@ -67,7 +78,7 @@ class MainActivity : ComponentActivity() {
                             startActivity(
                                 Intent(
                                     Intent.ACTION_VIEW,
-                                    Uri.parse("https://github.com/114taskforce/DLUT-door-opener"),
+                                    Uri.parse("https://github.com/114taskforce/DLUT-sesame"),
                                 )
                             )
                         },
@@ -94,13 +105,21 @@ class MainActivity : ComponentActivity() {
         }
         // 启动时静默自动登录,提前备好 token(无凭据/最近登录过则跳过)
         vm.ensureTokenFresh()
-        // 打开 APP 时自动触发一次开门(需在设置中打开「自动开门」;30 秒内去重)
-        vm.autoOpenIfNeeded()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        wentToBackground = true
     }
 
     override fun onResume() {
         super.onResume()
         val fromWebLogin = launchingWebLogin
+        val fromExternal = launchingExternal
+        // 只有冷启动或真的从后台回来才算「重新打开 App」
+        val reopened = firstResume || wentToBackground
+        firstResume = false
+        wentToBackground = false
         launchingWebLogin = false
         launchingExternal = false
         // 从网页登录页返回后刷新信任 cookie 状态
@@ -112,6 +131,12 @@ class MainActivity : ComponentActivity() {
             // 回到前台时若 token 已过期,后台静默补登录(15 分钟内获取过则跳过)
             vm.ensureTokenFresh()
         }
+        // 应用内来回切页面、网页登录/外链返回、旋转重建都不算重新打开 App。
+        // MainViewModel 里还有 10 秒去重兜底,连续启动不会重复开门
+        if (reopened && !fromWebLogin && !fromExternal && !restoredFromSavedState) {
+            vm.autoOpenIfNeeded()
+        }
+        restoredFromSavedState = false
     }
 
     override fun onUserLeaveHint() {
