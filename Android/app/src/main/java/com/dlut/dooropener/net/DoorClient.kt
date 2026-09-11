@@ -331,6 +331,8 @@ class DoorClient(
     fun login(username: String, password: String): String {
         // STEP0 预置信任设备 cookie(固件 COOKIE_INPUT 等价;为空则等效裸登录)
         preloadWebCookies()
+        // 登录前记一笔,用于最后判断这次是否真的换到了新 token
+        val tokenBefore = currentToken()
 
         // VPN 模式:先打开 WebVPN,之后门禁请求才会被网关代理/放行
         if (useVpn) vpnOpenSession(username, password)
@@ -463,7 +465,13 @@ class DoorClient(
             throw LoginException("登录后未获得 shfb-token(将打开网页登录完成认证)", needWebLogin = true)
         }
         persistCookies()
-        Log.i(TAG, "STEP5 拿到 token(len=${token.length})")
+        if (token == tokenBefore) {
+            // 服务端这次没重发 shfb-token:会话(JSESSIONID)可能已刷新,但也可能整条链都是旧值,
+            // 出现「用户登录会话超时」时看这行日志就能判断
+            Log.w(TAG, "STEP5 token 与登录前相同(len=${token.length}),本次未换到新 token")
+        } else {
+            Log.i(TAG, "STEP5 拿到新 token(len=${token.length})")
+        }
         return token
     }
 

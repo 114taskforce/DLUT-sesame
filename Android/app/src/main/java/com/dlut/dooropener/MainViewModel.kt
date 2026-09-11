@@ -9,6 +9,7 @@ import com.dlut.dooropener.net.DeviceClient
 import com.dlut.dooropener.net.DeviceException
 import com.dlut.dooropener.net.DoorClient
 import com.dlut.dooropener.net.LoginException
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -364,19 +365,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** token 视为新鲜的有效期:距获取 15 分钟内则不重复登录 */
     private val TOKEN_FRESH_MS = 15 * 60_000L
 
+    /**
+     * VPN 模式下 token 的新鲜窗口:走的是网关会话(服务端存活短,且校外只能走网关),
+     * 所以每次打开应用都重新登一次;这个短窗口只用来吸收 onCreate/onResume 的连续调用
+     */
+    private val VPN_TOKEN_FRESH_MS = 30_000L
+
     /** 无 token 时静默登录的冷却期:失败后不反复锤登录接口 */
     private val NO_TOKEN_RETRY_MS = 60_000L
 
     /**
      * 静默确保 token 新鲜(启动与回到前台时调用):
      * 无凭据、最近登录过(成功或失败)则跳过;否则后台登录,不打扰用户。
+     * VPN 模式放宽为「每次打开应用都重登一次」——旧 token 在服务端已过期,
+     * 直接拿去开门只会得到「用户登录会话超时」。
      */
     fun ensureTokenFresh() {
         if (!settings.hasCredentials()) return
         val age = System.currentTimeMillis() - settings.lastLoginAt
         val hasToken = !client.currentToken().isNullOrEmpty()
-        if (hasToken && age < TOKEN_FRESH_MS) return        // 最近登录过,视为仍有效
-        if (!hasToken && age < NO_TOKEN_RETRY_MS) return    // 失败冷却期内不重试
+        val freshMs = if (settings.useVpn) VPN_TOKEN_FRESH_MS else TOKEN_FRESH_MS
+        if (hasToken && age < freshMs) return             // 最近登录过,视为仍有效
+        if (!hasToken && age < NO_TOKEN_RETRY_MS) return  // 失败冷却期内不重试
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
@@ -461,9 +471,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         deviceCode: String,
     ): Pair<String, Boolean> {
         try {
-            // 固件按按钮用的就是现成的 currentToken;为空则等同 setup 阶段的 updateToken
+            // 固件按按钮用的就是现成的 currentToken;为空则等同 setup 阶段的 updateToken。
+            // VPN 模式下网关会话过期快,先用一次 loginFresh 确保 token 新鲜
+            // (30 秒内刚登录过会直接复用,不会重复登录),免得先撞一次「用户登录会话超时」
             var token = client.currentToken()
-            if (token.isNullOrEmpty()) token = loginFresh(account, password)
+            if (token.isNullOrEmpty() || settings.useVpn) token = loginFresh(account, password)
 
             // 门锁编号未填时自动拉取设备列表补全(固件是写死编号,App 跟随账号)
             var code = deviceCode
@@ -476,12 +488,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 Log.i("DoorVM", "门锁编号已自动补全:$code")
             }
 
-            var r = client.openDoor(token, code, account)
-            if (r.success) return "开门成功" to true
+            // 第一次尝试:业务失败(如「用户登录会话超时」)或网络异常都要继续走重登重试,
+            // 直接放弃会让偶发抖动变成用户看到的失败
+            val first = try {
+                client.openDoor(token, code, account)
+            } catch (e: IOException) {
+                Log.w("DoorVM", "开门首次尝试异常,重登后重试:${e.message}")
+                null
+            }
+            if (first?.success == true) return "开门成功" to true
 
             // 第一次失败:updateToken(强制重登)后重试一次
             token = loginFresh(account, password, force = true, previousToken = token)
-            r = client.openDoor(token, code, account)
+            val r = client.openDoor(token, code, account)
             if (r.success) return "开门成功(重试后)" to true
             return "开门失败:${shortMessage(r.body)}" to false
         } catch (e: LoginException) {
