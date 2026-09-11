@@ -177,13 +177,22 @@ fun SettingsScreen(
                 Column(Modifier.weight(1f)) {
                     Text("使用 WebVPN", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        "开启后先登录 webvpn.dlut.edu.cn 再访问门禁(校外/不在校园网时打开);" +
-                            "关闭时直连门禁,不尝试打开 VPN",
+                        "开启后不在校园网时经 webvpn.dlut.edu.cn 访问门禁;校园网内自动直连(少一跳更稳)。" +
+                            "关闭则完全不碰 VPN",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Switch(checked = state.useVpn, onCheckedChange = onUseVpnChange)
+            }
+
+            if (state.tokenMissing) {
+                Text(
+                    "注意:最近一次登录未取到 shfb-token。校外经 WebVPN 时会话由网关承担,属正常;" +
+                        "在校园网内直连登录一次即可重新拿到 token",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
 
             HorizontalDivider()

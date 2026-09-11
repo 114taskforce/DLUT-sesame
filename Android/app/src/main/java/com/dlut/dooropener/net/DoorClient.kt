@@ -233,10 +233,61 @@ class DoorClient(
 
     private val cookieJar = MemoryCookieJar()
 
+    // ==================== 直连可达性(校园网判断) ====================
+
+    /**
+     * 门禁能否直连的探测结果(带缓存)。校园网内门禁直连可达:此时即使 VPN 开关开着也走直连——
+     * 少一跳更稳,而且网关那一跳会把 CAS 票据吃掉,反而让会话建立不起来(表现为「用户登录会话超时」)。
+     */
+    private var directProbeAt = 0L
+    private var directProbeOk = false
+
+    /** 探测缓存有效期:过期后由下一次登录重新探测,网络切换最多 1 分钟后被纠正 */
+    private val DIRECT_PROBE_TTL_MS = 60_000L
+
+    /** 探测专用短超时客户端(不跟随重定向、不带 cookie) */
+    private val probeClient = OkHttpClient.Builder()
+        .protocols(listOf(Protocol.HTTP_1_1))
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .build()
+
+    /**
+     * 探测门禁是否可直连。**只能在 IO 线程调用**(登录流程里),不要放进 CookieJar 回调等
+     * OkHttp 内部路径——那会在 OkHttp 线程里再发起网络请求。
+     */
+    fun refreshDirectProbe() {
+        val now = System.currentTimeMillis()
+        if (now - directProbeAt < DIRECT_PROBE_TTL_MS) return
+        directProbeAt = now
+        // 蜂窝网络上门禁一定不可达(校外):不必花 2 秒探测超时,直接按「需要 WebVPN」处理,
+        // 让 VPN 登录立刻开始(自动开门时这一点最明显)
+        if (!settings.isOnWifi()) {
+            directProbeOk = false
+            Log.i(TAG, "直连探测:当前是移动网络,跳过探测直接走 WebVPN")
+            return
+        }
+        directProbeOk = try {
+            probeClient.newCall(
+                Request.Builder().url("$MENJIN_BASE/cser/static/menjin/index.html")
+                    .header("User-Agent", USER_AGENT).build()
+            ).execute().use { true }
+        } catch (e: IOException) {
+            false
+        }
+        Log.i(TAG, "直连探测:${if (directProbeOk) "门禁可达(按校园网处理,走直连)" else "门禁不可达(需要 WebVPN)"}")
+    }
+
+    /** 直连请求失败(可能刚从校园网切走)时作废缓存,下一次登录重新判断 */
+    private fun invalidateDirectProbe() {
+        directProbeAt = 0L
+    }
+
     // ==================== 接口地址 ====================
 
-    /** 是否走 WebVPN(开关即读,切换后立即生效) */
-    private val useVpn: Boolean get() = settings.useVpn
+    /** 是否走 WebVPN:开关打开、且门禁直连不可达时才真的绕网关 */
+    private val useVpn: Boolean get() = settings.useVpn && !directProbeOk
 
     /** WebVPN 代理地址:同一份门禁路径,换个入口域名 */
     private fun vpnUrl(path: String) = "$VPN_BASE/http/$VPN_ENC$path"
@@ -300,6 +351,13 @@ class DoorClient(
 
     // ==================== Token ====================
 
+    /**
+     * 最近一次登录是否没拿到 shfb-token。VPN(网关代理)模式下这属正常——会话在网关侧,
+     * cookie 不一定下发;直连模式拿不到则说明登录没成功。UI 据此给用户明确标注。
+     */
+    var lastLoginTokenMissing = false
+        private set
+
     /** 当前 jar 中的 shfb-token(可能已失效,失效时重新登录) */
     fun currentToken(): String? {
         val menjin = cookieJar.get(MENJIN_HOST, "shfb-token")
@@ -329,8 +387,13 @@ class DoorClient(
      * 成功返回 token,失败抛 [LoginException]
      */
     fun login(username: String, password: String): String {
+        // 开关打开时先探一次门禁能不能直连:能直连(校园网内)就不绕网关,
+        // 后面的 URL 映射与 token 读取都按这个结果走
+        if (settings.useVpn) refreshDirectProbe()
+
         // STEP0 预置信任设备 cookie(固件 COOKIE_INPUT 等价;为空则等效裸登录)
         preloadWebCookies()
+        lastLoginTokenMissing = false
         // 登录前记一笔,用于最后判断这次是否真的换到了新 token
         val tokenBefore = currentToken()
 
@@ -462,6 +525,15 @@ class DoorClient(
         // STEP5 提取 token
         val token = currentToken()
         if (token.isNullOrEmpty()) {
+            if (useVpn) {
+                // WebVPN(代理)模式下会话留在网关侧,shfb-token 不一定下发到客户端:
+                // 没有存量 token 时不能算失败,照常走网关请求(接口由网关的会话认证)。
+                // 直连模式拿不到 token 才是真的没登录成功,要报错引导网页登录。
+                Log.w(TAG, "STEP5 未拿到 shfb-token(VPN 由网关代理会话,可不下发),继续走网关请求")
+                lastLoginTokenMissing = true
+                persistCookies()
+                return ""
+            }
             throw LoginException("登录后未获得 shfb-token(将打开网页登录完成认证)", needWebLogin = true)
         }
         persistCookies()
@@ -653,13 +725,23 @@ class DoorClient(
 
         // VPN 模式:网关在校园网内会把请求 302 回门禁真实域名,OkHttp 跟随会把 POST 降级成 GET,
         // 所以在 Location 上原样重发(校外时网关直接代理,不会走到这里)
-        var resp = client.newCall(req).execute()
+        var resp = try {
+            client.newCall(req).execute()
+        } catch (e: IOException) {
+            invalidateDirectProbe()
+            throw e
+        }
         val redirect = if (useVpn && resp.code in 300..399) resp.header("Location") else null
         val target = redirect?.let { req.url.resolve(it) }
         if (target != null) {
             resp.close()
             Log.i(TAG, "开门请求被网关重定向 → ${target.host},按真实地址重发")
-            resp = client.newCall(req.newBuilder().url(target).build()).execute()
+            resp = try {
+                client.newCall(req.newBuilder().url(target).build()).execute()
+            } catch (e: IOException) {
+                invalidateDirectProbe()
+                throw e
+            }
         }
         resp.use {
             val text = it.body?.string() ?: ""
@@ -725,6 +807,7 @@ class DoorClient(
                 Log.i(TAG, "设备列表响应: code=$code 最终URL=$finalUrl body=${text?.take(200)}")
             }
         } catch (e: IOException) {
+            invalidateDirectProbe()
             lastError = e
         }
 
@@ -755,11 +838,17 @@ class DoorClient(
 
     private fun get(url: String): String {
         val req = browserize(Request.Builder().url(url).header("User-Agent", USER_AGENT), url)
-        client.newCall(req.build())
-            .execute().use { resp ->
-                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code} @ $url")
-                return resp.body?.string() ?: ""
-            }
+        val resp = try {
+            client.newCall(req.build()).execute()
+        } catch (e: IOException) {
+            // 直连失败往往意味着刚从校园网切走:作废探测缓存,下次登录重新判断
+            invalidateDirectProbe()
+            throw e
+        }
+        resp.use {
+            if (!it.isSuccessful) throw IOException("HTTP ${it.code} @ $url")
+            return it.body?.string() ?: ""
+        }
     }
 
     private fun extract(html: String, left: String, right: String): String {

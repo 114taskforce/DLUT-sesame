@@ -31,6 +31,8 @@ data class UiState(
     val autoOpen: Boolean = false,
     val keepBackground: Boolean = true,
     val useVpn: Boolean = false,
+    // 最近一次登录没取到 shfb-token(重装/清过 cookie 后校外会遇到;会话由网关承担)
+    val tokenMissing: Boolean = false,
     // 状态
     val status: String = "就绪",
     val statusKind: StatusKind = StatusKind.IDLE,
@@ -112,13 +114,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 "登录失败:${e.message}" to false
             }
             _uiState.update {
-                it.copy(status = r.first, statusKind = if (r.second) StatusKind.SUCCESS else StatusKind.FAIL)
+                it.copy(
+                    status = r.first,
+                    statusKind = if (r.second) StatusKind.SUCCESS else StatusKind.FAIL,
+                    tokenMissing = client.lastLoginTokenMissing,
+                )
             }
         }
     }
 
     /** 供 Activity 在返回键/退出时读取(不进 UiState 的时机也可用) */
     fun keepBackgroundEnabled(): Boolean = settings.keepBackground
+
+    /** 登录没取到 token 时的可见标注(VPN 代理模式下会话由网关承担,属正常现象) */
+    private fun tokenNote(): String = if (client.lastLoginTokenMissing) "(未获取 token,走网关会话)" else ""
 
     // ==================== 同步到 ESP32 设备 ====================
     // 一次把 4 类信息推给门禁固件: 账号密码 / 门锁编号 / 信任 cookie / 巴法云参数,
@@ -396,6 +405,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 静默失败:不弹错误,等回到前台或开门时再试
                 Log.w("DoorVM", "静默登录失败:${e.message}")
             }
+            _uiState.update { it.copy(tokenMissing = client.lastLoginTokenMissing) }
         }
     }
 
@@ -454,6 +464,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     status = r.first,
                     statusKind = if (r.second) StatusKind.SUCCESS else StatusKind.FAIL,
+                    tokenMissing = client.lastLoginTokenMissing,
                 )
             }
         }
@@ -496,12 +507,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 Log.w("DoorVM", "开门首次尝试异常,重登后重试:${e.message}")
                 null
             }
-            if (first?.success == true) return "开门成功" to true
+            if (first?.success == true) return "开门成功${tokenNote()}" to true
 
             // 第一次失败:updateToken(强制重登)后重试一次
             token = loginFresh(account, password, force = true, previousToken = token)
             val r = client.openDoor(token, code, account)
-            if (r.success) return "开门成功(重试后)" to true
+            if (r.success) return "开门成功(重试后)${tokenNote()}" to true
             return "开门失败:${shortMessage(r.body)}" to false
         } catch (e: LoginException) {
             Log.e("DoorVM", "开门流程登录失败", e)
@@ -543,13 +554,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 result
             }
             _uiState.update {
-                val base = it.copy(fetchingDevices = false)
+                val base = it.copy(fetchingDevices = false, tokenMissing = client.lastLoginTokenMissing)
                 if (r.second != null) {
                     base.copy(status = "获取失败:${r.second}")
                 } else if (r.first.isEmpty()) {
                     base.copy(status = "未获取到设备编号,请手动输入")
                 } else {
-                    base.copy(deviceCandidates = r.first)
+                    base.copy(deviceCandidates = r.first, status = "已获取 ${r.first.size} 个编号${tokenNote()}")
                 }
             }
         }

@@ -1,6 +1,8 @@
 package com.dlut.dooropener.data
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 
 /**
  * 设置与状态持久化(SharedPreferences)。
@@ -8,7 +10,20 @@ import android.content.Context
  */
 class SettingsStore(context: Context) {
 
-    private val sp = context.getSharedPreferences("door_settings", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val sp = appContext.getSharedPreferences("door_settings", Context.MODE_PRIVATE)
+
+    /**
+     * 当前是否连着 WiFi。门禁只可能从校园网(或校园可达的网络)直连,
+     * 走蜂窝时门禁域名一定不可达——据此可以省掉「直连探测」那 2 秒超时。
+     * 判断不出来时按 WiFi 处理(宁可贵一点探测,也别误判成校外)。
+     */
+    fun isOnWifi(): Boolean {
+        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return true
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
 
     var account: String
         get() = sp.getString(KEY_ACCOUNT, "") ?: ""
