@@ -7,7 +7,7 @@
 
 | 组件 | 位置 | 当前版本 |
 |---|---|---|
-| 手机 App | `Android/`，`com.dlut.dooropener` | 1.3.0 (versionCode 6) |
+| 手机 App | `Android/`，`com.dlut.dooropener` | 1.3.1 (versionCode 7) |
 | 设备固件 | `ESP/`，PlatformIO `env:campusnet` | 协议 `fwVer=1` |
 
 ```

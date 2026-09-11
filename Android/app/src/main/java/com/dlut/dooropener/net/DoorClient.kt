@@ -185,6 +185,10 @@ class DoorClient(
         /** 清掉某个域的 cookie(网关票据与客户端会话绑定,换网络后旧票据会失效) */
         fun clearHost(host: String) = store.removeAll { it.domain == host || it.domain == ".$host" }
 
+        /** 某个域的 cookie 名(只记名字,不落值) */
+        fun namesOf(host: String): String =
+            store.filter { it.domain == host || it.domain == ".$host" }.joinToString(",") { it.name }
+
         fun serialize(): String {
             val arr = JSONArray()
             for (c in store) {
@@ -334,21 +338,34 @@ class DoorClient(
         val loginUrl = "$SSO_BASE/cas/login?service=$SERVICE"
 
         // STEP1 获取登录页 —— 仿固件:不自动跟随重定向,手动处理 Location。
-        // 信任 cookie(CASTGC 等)有效时 CAS 直接 302 到 menjin 带 ticket,全程透明无二次认证
-        var page: String
-        client.newBuilder().followRedirects(false).build().newCall(
-            Request.Builder().url(loginUrl).header("User-Agent", USER_AGENT).build()
-        ).execute().use { r ->
-            val loc = r.header("Location")?.let { raw -> r.request.url.resolve(raw) }
-            page = when {
-                // 被 302(无论是否门禁站):手动访问目标地址拿响应
-                // (VPN 模式下门禁地址要换成网关地址,否则校外连不上真实域名)
-                loc != null -> {
+        // 信任 cookie(CASTGC 等)有效时 CAS 直接 302 到 menjin 带 ticket,全程透明无二次认证。
+        // ticket 换会话偶发拿到空响应(网关/网络抖动),不处理的话会静默沿用旧 token,
+        // 之后每个接口都回「用户登录会话超时」,所以空响应要换一张新 ticket 重来
+        var page = ""
+        var gotTicket = false
+        for (attempt in 1..2) {
+            var emptyTicket = false
+            client.newBuilder().followRedirects(false).build().newCall(
+                Request.Builder().url(loginUrl).header("User-Agent", USER_AGENT).build()
+            ).execute().use { r ->
+                val loc = r.header("Location")?.let { raw -> r.request.url.resolve(raw) }
+                if (loc != null) {
+                    // 被 302(无论是否门禁站):手动访问目标地址拿响应
+                    // (VPN 模式下门禁地址要换成网关地址,否则校外连不上真实域名)
                     Log.i(TAG, "STEP1 GET 登录页被 302 → $loc")
-                    get(viaVpn(loc.toString()))
+                    gotTicket = true
+                    page = get(viaVpn(loc.toString()))
+                    emptyTicket = page.isEmpty()
+                } else {
+                    page = r.body?.string() ?: ""
                 }
-                else -> r.body?.string() ?: ""
             }
+            if (!emptyTicket) break
+            Log.w(TAG, "ticket 回跳响应为空,重新登录换新 ticket(第 $attempt 次)")
+        }
+        if (gotTicket && page.isEmpty()) {
+            // 用 IOException 而不是 LoginException:取编号流程对 IO 类失败会自动重登重试一次
+            throw IOException("用 ticket 换取门禁会话失败(响应为空),请稍后重试")
         }
         val lt = extract(page, "name=\"lt\" value=\"", "\"")
         val execution = extract(page, "name=\"execution\" value=\"", "\"")
@@ -457,10 +474,14 @@ class DoorClient(
      * 信任 cookie(CASTGC)有效时全程透明 302,无需二次认证。
      */
     private fun vpnOpenSession(username: String, password: String) {
-        // 网关票据与客户端会话绑定:换网络(校园网↔流量)或票据过期后,旧 cookie 会让入口直接 500,
-        // 所以入口失败时先清掉网关域的 cookie 再来一次
+        // 网关票据与客户端状态绑定(网络、IP 等):手机在校园网/流量间切换后,jar 里的旧票据
+        // 会让入口误判"已登录"(直接回门户、不再登录),但用它访问门禁时网关只会 302 回门禁
+        // 真实域名——校外连不上就是这里。所以每次重登 VPN 都先丢掉旧票据,走一次干净的网关登录
+        Log.i(TAG, "VPN STEP0 丢弃旧网关票据(${cookieJar.namesOf(VPN_HOST)})")
+        clearVpnCookies()
+
         val (casUrl, _) = tryGetFollowing(VPN_LOGIN_ENTRY) ?: run {
-            Log.w(TAG, "VPN 入口失败,清空网关 cookie 后重试")
+            Log.w(TAG, "VPN 入口失败,再清一次网关 cookie 重试")
             clearVpnCookies()
             getFollowing(VPN_LOGIN_ENTRY)
         }
