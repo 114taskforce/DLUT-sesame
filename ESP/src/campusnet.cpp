@@ -336,6 +336,30 @@ static String dumpCookies()
     return out;
 }
 
+// 丢掉 jar 里的 CAS 会话 cookie(CASTGC / JSESSIONIDCAS)。
+// 会话在服务端失效后, 带着它 CAS 认为"已登录"而不下发带 lt/execution 的登录表单,
+// 账号密码兜底分支就永远走不到 —— 这正是换票/重登时"卡死"的原因。
+// 清掉后重新请求登录页, CAS 回到未登录态, 就会正常发表单。
+//
+// 注意: 只从 jar 移除条目, COOKIE_INPUT 的原始串(gSeedCookie)原样保留 ——
+// 粘贴的那份绕过二次认证的 cookie 不会被清除, campusSeedCookie() 仍可按名取用,
+// 下次 applySeedCookies()/campusLogin() 也会重新注入(服务端亲发的同名值优先)。
+// 且只在拿到完整响应却确认没有表单(或换不到票)时调用, 网络失败的场景不要动 cookie。
+static int dropCasSession()
+{
+    int dropped = 0;
+    for (int i = 0; i < gCookieCount; ) {
+        bool casSession = (gCookies[i].name == "CASTGC" || gCookies[i].name == "JSESSIONIDCAS") &&
+                          hostRelated(gCookies[i].host, SSO_HOSTNAME);
+        if (!casSession) { i++; continue; }
+        for (int j = i; j < gCookieCount - 1; j++) gCookies[j] = gCookies[j + 1];
+        gCookieCount--;
+        dropped++;
+    }
+    if (dropped) Serial.printf("[Cookie] 丢掉失效的 CAS 会话 cookie %d 条\n", dropped);
+    return dropped;
+}
+
 // ==================== 二次认证兜底: 浏览器 Cookie 种子 ====================
 // config.h 的 COOKIE_INPUT 是一整条浏览器 Cookie 头("a=1; b=2")。CAS 对脚本登录弹
 // 二次认证(短信/验证码)时表单过不去, 粘一份浏览器已登录的 cookie 进来即可绕过:
@@ -752,9 +776,27 @@ bool campusCasTicket(const String& service, String& ticketUrl)
     String hiddenExtra = collectHiddenFields(html);
     Serial.println("[票据] 无登录态, 提交表单: lt=" + lt + " execution=" + execution);
     if (!lt.length() || !execution.length()) {
-        Serial.println("[票据] 登录页无 lt/execution");
+        // 带着失效的 CAS 会话 cookie 时 CAS 认为"已登录", 不给带 lt/execution 的表单。
+        // 先丢掉它重新取页 —— CAS 回到未登录态就会下发表单, 走下面的账号密码兜底。
+        Serial.println("[票据] 登录页无 lt/execution(会话 cookie 可能已失效)");
         printTrunc("票据登录页", html);
-        return false;
+        if (html.length() == 0) return false;      // 空响应 = 网络问题, cookie 没问题
+        dropCasSession();
+        res = String();
+        res = httpRequest(loginUrl, "GET", "", "", "");
+        saveCookie(res);
+        loc = getRedirectUrl(res, loginUrl);
+        if (loc.indexOf("ticket=") != -1) { ticketUrl = loc; return true; }
+        html = getBody(res);
+        lt = getFormValue(html, "lt");
+        execution = getFormValue(html, "execution");
+        hiddenExtra = collectHiddenFields(html);
+        Serial.println("[票据] 丢掉失效会话后重新取页: lt=" + lt + " execution=" + execution);
+        if (!lt.length() || !execution.length()) {
+            Serial.println("[票据] 仍未下发登录表单, 需重新粘贴浏览器 cookie");
+            printTrunc("票据登录页", html);
+            return false;
+        }
     }
     // 缓冲区按 DES 最大输出长度分配(每 4 字节明文 → 16 个 hex), 见 campusLogin [6]
     String data = String(cfg.user) + cfg.pass + lt;
@@ -809,7 +851,7 @@ void campusInit()
 // session_state = JSESSIONIDCAS 值 + "!" + 毫秒时间戳。
 // 用于 [5b]: 带 cookie(config.h 的 COOKIE_INPUT 或上一次登录拿到的 CASTGC)时 CAS
 // 不再回带 lt/execution 的表单页, 登录链改走这条路。
-static bool casRedeemPortalTicket(const String& referer, String& ticketUrl)
+static bool casRedeemPortalTicket(const String& referer, String& ticketUrl, bool* serverAnswered = nullptr)
 {
     String jsid = getCookieValue(SSO_HOSTNAME, "JSESSIONIDCAS");
     String inner = String(SSO_HOST) + "/cas/oauth2.0/callbackAuthorize?casDelegate=null";
@@ -822,6 +864,7 @@ static bool casRedeemPortalTicket(const String& referer, String& ticketUrl)
     printHeap("[5b] 换票");
     String extra = referer.length() ? ("Referer: " + referer + "\r\n") : String();
     String res = httpRequest(cbUrl, "GET", "", "", extra);
+    if (serverAnswered) *serverAnswered = (res.length() > 0);
     saveCookie(res);
     String loc = getRedirectUrl(res, cbUrl);
     Serial.println("[5b] 换票跳转: " + loc);
@@ -1004,12 +1047,29 @@ bool campusLogin(CampusInfo &info)
             Serial.println("[5] 无登录表单(" + statusLine(res) + "), 尝试凭 CASTGC 直接换票");
             Serial.println("    跳转: " + (loc.length() ? loc : String("(无跳转)")));
             Serial.println("    页面字段: " + formFieldNames(getBody(res)));
-            if (!casRedeemPortalTicket(ssoLoginUrl, ticketUrl)) {
-                Serial.println("[5b] 换票失败: CASTGC 无效或已过期, 请重新粘贴浏览器 cookie");
+            bool answered = false;   // CAS 是否真的回了响应(网络失败不能据此判定会话失效)
+            if (!casRedeemPortalTicket(ssoLoginUrl, ticketUrl, &answered)) {
+                Serial.println("[5b] 换票失败: CASTGC 无效或已过期");
                 printTrunc("登录页正文", getBody(res));
-                return false;
+                if (!answered) return false;   // 换票请求本身没响应 = 网络问题, 不动 cookie
+                // 会话已死却还带着旧 cookie, CAS 就不会下发表单。丢掉它重新取页,
+                // 让 CAS 回到未登录态, 走下面的 [6] 账号密码提交拿新 CASTGC(自愈)。
+                dropCasSession();
+                res = String();
+                res = httpRequest(ssoLoginUrl, "GET", "", "", "");
+                saveCookie(res);
+                lt = getFormValue(res, "lt");
+                execution = getFormValue(res, "execution");
+                hiddenExtra = collectHiddenFields(res);
+                Serial.println("[5c] 丢掉失效会话后重新取页: lt=" + lt + " execution=" + execution);
+                if (!lt.length() || !execution.length()) {
+                    Serial.println("[5c] 仍未下发登录表单, 需重新粘贴浏览器 cookie");
+                    printTrunc("登录页正文", getBody(res));
+                    return false;
+                }
+            } else {
+                Serial.println("[5b] 换票成功, 跳过表单提交");
             }
-            Serial.println("[5b] 换票成功, 跳过表单提交");
         }
         // 上面已换到票就不提交表单(走表单时 ticketUrl 必为空)
         if (!ticketUrl.length()) {

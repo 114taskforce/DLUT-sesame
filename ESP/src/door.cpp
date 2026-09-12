@@ -27,7 +27,7 @@ static const char* TIME_API_URL   = "http://f.m.suning.com/api/ct.do";
 // 设备编号 / personId(学号) 走 settings(NVS, 出厂默认在 config.h)；
 // 项目码与签名盐是全校固定/前端硬编码常量, 直接用 config.h 的宏。
 
-#define DOOR_TOKEN_TTL 3600000UL   // token 按 1 小时刷新
+#define DOOR_TOKEN_TTL 1800000UL   // token 每 30 分钟主动刷新一次(另有开门失败后即时刷新)
 
 static String gToken;
 static unsigned long gTokenAt = 0;
@@ -238,6 +238,8 @@ unsigned long doorTokenAgeMs()
 {
     return gToken.length() ? (millis() - gTokenAt) : 0;
 }
+
+unsigned long doorTokenTtlMs() { return DOOR_TOKEN_TTL; }
 
 const char* doorLastResp() { return gLastResp; }
 

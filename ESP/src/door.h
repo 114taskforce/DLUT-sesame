@@ -18,8 +18,11 @@ bool doorSyncTime(int maxRetries = 5);
 // 取门禁会话 token(shfb-token): 复用校园网 CASTGC 换 CAS 票据 → 请求门禁首页落地 cookie
 bool doorAcquireToken();
 
-// token 是否为空或已超过 1 小时(供主程序定时刷新)
+// token 是否为空或已超过 30 分钟(供主程序定时刷新)
 bool doorTokenExpired();
+
+// 主动刷新周期(毫秒), 供 /status 的 tokenTtl 回显, 与刷新逻辑同源
+unsigned long doorTokenTtlMs();
 
 // 开门: 失败时自动重取 token 重试一次
 DoorResult doorOpen();

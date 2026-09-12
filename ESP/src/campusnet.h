@@ -70,6 +70,8 @@ int campusSeedApplied();
 
 // CAS 服务票据: 为 service 换取 ticket=ST-... 完整回跳地址。
 // 优先复用已有 CASTGC(两次请求即得); 无登录态时自动提交账号密码后再换。
+// 持有的 CAS 会话已失效(拿不到票且 CAS 不下发表单)时, 会先丢掉 jar 里
+// sso 域的 CASTGC/JSESSIONIDCAS 再重新取页, 让账号密码兜底能正常走。
 // 成功返回 true, ticketUrl 为含 ticket 的 service 地址。
 bool campusCasTicket(const String& service, String& ticketUrl);
 

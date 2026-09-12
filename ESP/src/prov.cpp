@@ -129,7 +129,7 @@ static void hStatus()
     jsonStr(j, "ip", WiFi.localIP().toString());
     jsonStr(j, "campus", appCampusOnline() ? "logged-in" : "offline");
     jsonNum(j, "tokenAge", doorTokenAgeMs() / 1000);
-    jsonNum(j, "tokenTtl", 3600);
+    jsonNum(j, "tokenTtl", doorTokenTtlMs() / 1000);
     jsonBool(j, "timeSynced", doorTimeSynced());
     jsonNum(j, "seedCookies", campusSeedApplied());
     jsonNum(j, "freeHeap", (unsigned long)ESP.getFreeHeap());
@@ -183,7 +183,7 @@ static void hSave()
 
     // 第二遍写入
     String saved = "[", errs = "{";            // saved 是数组, errors 是对象(与文档一致)
-    bool savedAny = false, errAny = false, pinChanged = false;
+    bool savedAny = false, errAny = false, pinChanged = false, cookieSaved = false;
     for (int i = 0; i < nArgs; i++) {
         if (!sSrv.hasArg(gArgs[i].http)) continue;
         String v = sSrv.arg(gArgs[i].http);
@@ -193,6 +193,7 @@ static void hSave()
         const char* err = nullptr;
         if (settingsSet(gArgs[i].field, v.c_str(), &err)) {
             if (thisIsNewPin) pinChanged = true;
+            if (strcmp(gArgs[i].field, "cookie") == 0) cookieSaved = true;
             if (savedAny) saved += ',';
             saved += '"'; saved += gArgs[i].http; saved += '"';
             savedAny = true;
@@ -224,6 +225,9 @@ static void hSave()
     if (errs.length() > 2)  jsonRaw(j, "errors", errs);
     jsonBool(j, "needReboot", false);
     j += "}";
+    // 重贴的 cookie 立即重新登记+注入种子: gSeedCookie 本来只在 campusInit 登记一次,
+    // 不这样处理的话新贴的二次认证 cookie 要重启固件才会被登录链用上
+    if (cookieSaved) campusSeedCookies(cfg.cookie);
     sApRestart = pinChanged;          // 响应发完再重开热点(见 provHandleClient)
     sendJson(200, j);
 }

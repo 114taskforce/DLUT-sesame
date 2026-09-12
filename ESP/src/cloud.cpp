@@ -338,15 +338,19 @@ static void handleCfgFrame(const char* body)
     const char* fields[] = { "user", "pass", "code", "cookie", "ssid", "wifipswd",
                              "pin", "bemfakey", "doorTopic", "cfgTopic", "ackTopic" };
     char saved[ACK_MAX] = "";
+    bool cookieSaved = false;
     for (unsigned int i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         char v[CFG_JSON_MAX];
         if (!jsonVal((const char*)js, n, keys[i], v, sizeof(v))) continue;
         const char* err = nullptr;
         if (!settingsSet(fields[i], v, &err)) continue;
+        if (strcmp(fields[i], "cookie") == 0) cookieSaved = true;
         if (saved[0]) strlcat(saved, ",", sizeof(saved));
         strlcat(saved, keys[i], sizeof(saved));
     }
     if (!saved[0]) { snprintf(a, sizeof(a), "cfg-err,%s,empty", msgId); ack(a); return; }
+    // 重贴的 cookie 立即重新登记+注入种子(否则要重启才生效), 下面的整链认证就会用它
+    if (cookieSaved) campusSeedCookies(cfg.cookie);
     snprintf(a, sizeof(a), "cfg-ok,%s,%s", msgId, saved);
     ack(a);
     Serial.printf("[云] 配置已写入: %s\n", saved);

@@ -37,7 +37,7 @@
 
 ```json
 {"fwVer":1,"online":true,"wifi":"DLUT-LingShui","ip":"10.6.12.34","campus":"logged-in",
- "tokenAge":412,"tokenTtl":3600,"timeSynced":true,"seedCookies":2,"freeHeap":143260,
+ "tokenAge":412,"tokenTtl":1800,"timeSynced":true,"seedCookies":2,"freeHeap":143260,
  "user":"20241034000","code":"DL-LY-107000","cookieLen":204,"mqtt":"disabled",
  "ap":"on","lastDoor":"ok@12s","balance":"12.34元"}
 ```
@@ -46,7 +46,7 @@
 |---|---|---|
 | `online` | bool | STA 是否连上路由器（不代表校园网已认证，看 `campus`） |
 | `campus` | str | `logged-in` / `offline`，来自最近一次认证或 30 分钟巡检的**缓存值**，本请求不发探测 |
-| `tokenAge`/`tokenTtl` | 秒 | 距上次拿到门禁 token 的时长 / 有效期（1 小时） |
+| `tokenAge`/`tokenTtl` | 秒 | 距上次拿到门禁 token 的时长 / 主动刷新周期（30 分钟；开门失败时会即时重取一次，不依赖此周期） |
 | `timeSynced` | bool | 是否已校时（开门签名的时间戳来源） |
 | `seedCookies` | int | 基础 cookie 中实际注入会话的条数（白名单过滤后） |
 | `freeHeap` | int | 空闲内部 RAM。**低于 120000 时 App 要提示风险**（TLS 登录链峰值约 250KB/320KB，禁用了 PSRAM） |

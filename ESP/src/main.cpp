@@ -4,7 +4,8 @@
 //   上电: 连 WiFi → 校园网 eportal/CAS 认证 → 校时 → 换门禁 token
 //   按键 GPIO0(上拉, 按下=LOW): 短按=开门 / 长按 1.5s=重新登录刷新 / 长按 8s=开配网热点
 //   外部触发 GPIO4(下拉, 上升沿=米家门磁): 开门
-//   后台: 每 30 分钟检测在线(掉线自动重连并重取 token), token 超 1 小时自动刷新
+//   后台: 每 30 分钟检测在线(掉线自动重连并重取 token), token 超 30 分钟自动刷新,
+//         开门失败时 doorOpen() 内会即时重取 token 重试一次
 //   通道: 本地配网 HTTP(prov.cpp) + 云 MQTT(cloud.cpp, 待接入) —— 都调本文件的
 //         requestOpenDoor()/campusUpSteps(), 不各自实现一份开门逻辑
 //
@@ -320,7 +321,7 @@ void loop()
     }
     mjState = mj;
 
-    // ---- 门禁 token 到期刷新(1 小时) ----
+    // ---- 门禁 token 到期刷新(30 分钟; 开门失败时另有即时刷新) ----
     if (doorTokenExpired() && millis() - lastTokenTry >= TOKEN_RETRY_GAP) {
         lastTokenTry = millis();
         Serial.println("[定时] 刷新门禁 token");
