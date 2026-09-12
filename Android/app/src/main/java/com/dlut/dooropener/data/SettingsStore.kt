@@ -77,10 +77,15 @@ class SettingsStore(context: Context) {
         get() = sp.getString(KEY_WEB_COOKIE_MENJIN, "") ?: ""
         set(v) = sp.edit().putString(KEY_WEB_COOKIE_MENJIN, v).apply()
 
-    fun hasWebCookie(): Boolean = webCookieSso.isNotEmpty() || webCookieMenjin.isNotEmpty()
+    /** 网页登录(WebVPN 入口)抓到的 webvpn.dlut.edu.cn 域 cookie:校外时它是唯一的会话来源 */
+    var webCookieVpn: String
+        get() = sp.getString(KEY_WEB_COOKIE_VPN, "") ?: ""
+        set(v) = sp.edit().putString(KEY_WEB_COOKIE_VPN, v).apply()
+
+    fun hasWebCookie(): Boolean = webCookieSso.isNotEmpty() || webCookieMenjin.isNotEmpty() || webCookieVpn.isNotEmpty()
 
     fun clearWebCookies() {
-        sp.edit().remove(KEY_WEB_COOKIE_SSO).remove(KEY_WEB_COOKIE_MENJIN).apply()
+        sp.edit().remove(KEY_WEB_COOKIE_SSO).remove(KEY_WEB_COOKIE_MENJIN).remove(KEY_WEB_COOKIE_VPN).apply()
     }
 
     /** 凭据齐全 = 有账号密码即可(门锁编号会在开门流程自动获取补全) */
@@ -127,6 +132,7 @@ class SettingsStore(context: Context) {
         const val KEY_COOKIES = "cookies"
         const val KEY_WEB_COOKIE_SSO = "web_cookie_sso"
         const val KEY_WEB_COOKIE_MENJIN = "web_cookie_menjin"
+        const val KEY_WEB_COOKIE_VPN = "web_cookie_vpn"
         const val KEY_DEVICE_IP = "device_ip"
         const val KEY_DEVICE_PIN = "device_pin"
         const val KEY_BEMFA_KEY = "bemfa_key"

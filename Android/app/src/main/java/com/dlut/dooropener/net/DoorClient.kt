@@ -93,8 +93,7 @@ class DoorClient(
             "equipmentCode", "lockCode", "code", "roomCode",
         )
 
-        /** 从接口返回解析设备编号:优先按 JSON 键名,兜底正则扫描全文 */
-        fun parseDeviceCodes(text: String): List<String> {
+        /** 从接口返回解析设备编号:优先按 JSON 键名,兜底正则扫描全文 */        fun parseDeviceCodes(text: String): List<String> {
             val codes = LinkedHashSet<String>()
 
             fun add(s: String) {
@@ -493,8 +492,8 @@ class DoorClient(
                             needWebLogin = false,
                         )
                     }
-                    // 表单登录被拦截时,若预置 cookie(网页登录抓取)里有 shfb-token,
-                    // 它与刚建立的浏览器会话同源,固件 STEP6 同款思路直接复用
+                    // 表单登录被拦截时,若 jar 里(含网页登录预置)有 shfb-token,直接复用
+                    // 它与刚建立的浏览器会话同源,固件 STEP6 同款思路
                     val preset =
                         if (settings.webCookieMenjin.contains("shfb-token")) currentToken() else null
                     if (!preset.isNullOrEmpty()) {
@@ -521,6 +520,8 @@ class DoorClient(
         // STEP4 访问门禁首页,确保 cookie 落盘
         get(indexUrl())
         Log.i(TAG, "STEP4 门禁首页已访问, cookies=${cookieSummary()}")
+        // 校外经网关时,门禁的会话 cookie 只在网关手里,必须主动向它要回来
+        if (useVpn) vpnFetchSession()
 
         // STEP5 提取 token
         val token = currentToken()
@@ -652,20 +653,63 @@ class DoorClient(
             .add("_eventId", "submit")
             .build()
 
-    /** 把网页登录保存的 cookie 预置进 jar(固件 login() 开头的 cookieJar=COOKIE_INPUT) */
-    private fun preloadWebCookies() {
+    /**
+     * 把网页登录保存的 cookie 预置进 jar(固件 login() 开头的 cookieJar=COOKIE_INPUT)。
+     * 默认只补缺(不覆盖 jar 里已有的同名 cookie);网页登录刚回来时用 overwrite=true 显式采纳新会话。
+     */
+    private fun preloadWebCookies(overwrite: Boolean = false) {
         val sso = settings.webCookieSso
         val menjin = settings.webCookieMenjin
         if (sso.isNotEmpty()) {
             // 跳过 JSESSIONIDCAS:CAS 会话 cookie 以 CASTGC 为准,
             // 预置旧会话号会与服务端新下发的会话号冲突(同名双 cookie 服务端读旧值)
-            loadCookieString(sso, "sso.dlut.edu.cn", skipNames = setOf("JSESSIONIDCAS"))
+            loadCookieString(sso, "sso.dlut.edu.cn", skipNames = setOf("JSESSIONIDCAS"), onlyIfMissing = !overwrite)
             Log.i(TAG, "STEP0 预置 sso 信任 cookie: ${namesOnly(sso)}")
         }
         if (menjin.isNotEmpty()) {
-            loadCookieString(menjin, "menjin.dlut.edu.cn")
-            Log.i(TAG, "STEP0 预置 menjin 信任 cookie: ${namesOnly(menjin)}")
+            // 门禁侧这份常是「网页登录」时抓的:校外拿不到新会话时它可能是唯一的会话来源,
+            // 所以只在 jar 里没有同名 cookie 时补,别把刚建立的会话顶掉
+            loadCookieString(menjin, "menjin.dlut.edu.cn", onlyIfMissing = !overwrite)
+            Log.i(TAG, "STEP0 预置 menjin 信任 cookie(只补缺): ${namesOnly(menjin)}")
         }
+        val vpn = settings.webCookieVpn
+        if (vpn.isNotEmpty()) {
+            // 校外时门禁会话只落在 webvpn 域(网页登录在 WebView 里抓到的就是这份),
+            // 同样只补缺;每次 VPN 登录还会用 vpnFetchSession() 向网关要最新的一份
+            loadCookieString(vpn, VPN_HOST, onlyIfMissing = !overwrite)
+            Log.i(TAG, "STEP0 预置 webvpn 会话 cookie(只补缺): ${namesOnly(vpn)}")
+        }
+    }
+
+    /** 网页登录刚回来:那份 cookie 是最新的,直接覆盖 jar 里的会话再登录 */
+    fun adoptWebCookies() = preloadWebCookies(overwrite = true)
+
+    /**
+     * 向网关索要门禁的会话 cookie(网关前端 main.js 用的同一个接口):
+     * GET /wengine-vpn/cookie?method=get&host=<门禁域名>&scheme=http&path=<路径>&vpn_timestamp=<毫秒>
+     * 返回 "JSESSIONID=...; shfb-token=..." 形式的串。
+     * 校外时门禁的 Set-Cookie 不会直接下发到客户端,而是被网关存在自己那边,只有主动问才能拿到——
+     * 这就是「在 WebVPN 里拿 token」的办法。
+     */
+    private fun vpnFetchSession() {
+        val ts = System.currentTimeMillis()
+        val url = "$VPN_BASE/wengine-vpn/cookie?method=get&host=$MENJIN_HOST" +
+            "&scheme=http&path=/cser/static/menjin/index.html&vpn_timestamp=$ts"
+        val body = try {
+            get(url).trim()
+        } catch (e: Exception) {
+            Log.w(TAG, "向网关取门禁 cookie 失败:${e.message}")
+            return
+        }
+        if (body.isEmpty()) {
+            Log.w(TAG, "网关侧暂无门禁 cookie(会话可能还没建立)")
+            return
+        }
+        // 注入 jar(VPN 模式下这些 cookie 会随请求发给网关,由网关转交门禁)
+        loadCookieString(body, VPN_HOST)
+        persistCookies()
+        val names = body.split(';').map { it.trim().substringBefore('=') }.filter { it.isNotEmpty() }
+        Log.i(TAG, "STEP4b 已从网关取回门禁会话 cookie: $names")
     }
 
     /** 只记录 cookie 名字,不落值 */
@@ -677,13 +721,21 @@ class DoorClient(
     private fun cookieSummary(): String =
         cookieJar.listAll().joinToString("; ") { "${it.name}@${it.domain}" }
 
-    private fun loadCookieString(header: String, host: String, skipNames: Set<String> = emptySet()) {
+    private fun loadCookieString(
+        header: String,
+        host: String,
+        skipNames: Set<String> = emptySet(),
+        onlyIfMissing: Boolean = false,
+    ) {
         for (pair in header.split(";")) {
             val idx = pair.indexOf("=")
             if (idx <= 0) continue
             val name = pair.substring(0, idx).trim()
             val value = pair.substring(idx + 1).trim()
             if (name.isEmpty() || name in skipNames) continue
+            // 只在 jar 里没有同名 cookie 时补:网页登录抓到的那份可能很旧,
+            // 覆盖掉 jar 里刚建立的会话反而会让接口报「用户登录会话超时」
+            if (onlyIfMissing && !cookieJar.get(host, name).isNullOrEmpty()) continue
             cookieJar.addRaw(host, name, value)
         }
     }
@@ -817,6 +869,13 @@ class DoorClient(
         }
         val codes = parseDeviceCodes(bodyText)
         if (codes.isEmpty()) {
+            // 会话过期是最常见的失败:直接说清楚原因与出路,别只报"未解析出编号"
+            if (bodyText.contains("会话超时")) {
+                throw IOException(
+                    "门禁会话已过期(服务端:用户登录会话超时)" +
+                        if (useVpn) "——校外时 WebVPN 不向 App 下发会话,需在校园网内打开一次刷新" else "",
+                )
+            }
             throw IOException("接口返回中未解析出设备编号(code=$code, 最终URL=$finalUrl),请改用手动输入")
         }
         return codes

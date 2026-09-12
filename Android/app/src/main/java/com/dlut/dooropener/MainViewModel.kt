@@ -126,6 +126,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 供 Activity 在返回键/退出时读取(不进 UiState 的时机也可用) */
     fun keepBackgroundEnabled(): Boolean = settings.keepBackground
 
+    /** 供 Activity 选择网页登录入口用:开关打开时走 WebVPN 门户入口 */
+    fun useVpnEnabled(): Boolean = settings.useVpn
+
     /** 登录没取到 token 时的可见标注(VPN 代理模式下会话由网关承担,属正常现象) */
     private fun tokenNote(): String = if (client.lastLoginTokenMissing) "(未获取 token,走网关会话)" else ""
 
@@ -298,6 +301,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
+                    // 网页登录抓到的这份是最新的:先覆盖进 jar 再登录,别被 jar 里旧的会话挡住
+                    client.adoptWebCookies()
                     loginFresh(settings.account, settings.password, force = true)
                 }
                 _uiState.update {
@@ -384,6 +389,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val NO_TOKEN_RETRY_MS = 60_000L
 
     /**
+     * 当前模式下的 token 新鲜窗口。**所有"要不要重新登录"的判断都必须走这里**:
+     * 之前 loginFresh 内部写死了 15 分钟,把 VPN 模式的 30 秒窗口挡掉了——
+     * 打开应用时根本没重新登录,拿旧 token 开门就报「用户登录会话超时」
+     */
+    private val tokenFreshMs: Long
+        get() = if (settings.useVpn) VPN_TOKEN_FRESH_MS else TOKEN_FRESH_MS
+
+    /**
      * 静默确保 token 新鲜(启动与回到前台时调用):
      * 无凭据、最近登录过(成功或失败)则跳过;否则后台登录,不打扰用户。
      * VPN 模式放宽为「每次打开应用都重登一次」——旧 token 在服务端已过期,
@@ -393,7 +406,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!settings.hasCredentials()) return
         val age = System.currentTimeMillis() - settings.lastLoginAt
         val hasToken = !client.currentToken().isNullOrEmpty()
-        val freshMs = if (settings.useVpn) VPN_TOKEN_FRESH_MS else TOKEN_FRESH_MS
+        val freshMs = tokenFreshMs
         if (hasToken && age < freshMs) return             // 最近登录过,视为仍有效
         if (!hasToken && age < NO_TOKEN_RETRY_MS) return  // 失败冷却期内不重试
         viewModelScope.launch {
@@ -422,7 +435,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val cur = client.currentToken()
         if (!force) {
             val age = System.currentTimeMillis() - settings.lastLoginAt
-            if (!cur.isNullOrEmpty() && age < TOKEN_FRESH_MS) return cur
+            if (!cur.isNullOrEmpty() && age < tokenFreshMs) return cur
         } else if (previousToken != null && !cur.isNullOrEmpty() && cur != previousToken) {
             // 等锁期间静默刷新已换过 token,直接复用,避免二次登录
             return cur
@@ -513,7 +526,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             token = loginFresh(account, password, force = true, previousToken = token)
             val r = client.openDoor(token, code, account)
             if (r.success) return "开门成功(重试后)${tokenNote()}" to true
-            return "开门失败:${shortMessage(r.body)}" to false
+            // 会话过期时把原因说清楚:校外经网关时 App 拿不到门禁会话,只能在校园网内刷新
+            val hint = if (settings.useVpn && r.body.contains("会话超时")) {
+                "——校外时 WebVPN 不向 App 下发门禁会话,需在校园网内打开一次刷新"
+            } else {
+                ""
+            }
+            return "开门失败:${shortMessage(r.body)}$hint" to false
         } catch (e: LoginException) {
             Log.e("DoorVM", "开门流程登录失败", e)
             return "登录失败:${e.message}" to false
