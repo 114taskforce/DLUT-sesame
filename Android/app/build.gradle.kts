@@ -27,8 +27,8 @@ android {
         applicationId = "com.dlut.dooropener"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.3.3"
+        versionCode = 10
+        versionName = "1.4.0"
     }
 
     signingConfigs {

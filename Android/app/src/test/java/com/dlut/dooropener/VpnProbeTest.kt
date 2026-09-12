@@ -155,6 +155,49 @@ class VpnProbeTest {
         println("   shfb-token@webvpn=${tokenOf("webvpn.dlut.edu.cn")?.take(12)} " +
             "shfb-token@menjin=${tokenOf("menjin.dlut.edu.cn")?.take(12)}")
 
+        println("\n===== 3b. 校外时代理回来的页面到底是什么 =====")
+        println("   ---- 全文 ${body3.length} 字符,找 cookie 相关片段 ----")
+        for (kw in listOf("document.cookie", "shfb-token", "JSESSIONID", "__vpn", "localStorage", "setCookie", "wengine")) {
+            val hits = Regex(".{0,120}" + Regex.escape(kw) + ".{0,160}", RegexOption.DOT_MATCHES_ALL)
+                .findAll(body3).take(3).map { it.value.replace(Regex("\\s+"), " ") }.toList()
+            if (hits.isNotEmpty()) println("   [$kw] ${hits.size} 处:")
+            hits.forEach { println("      … $it") }
+        }
+        println("   ---- 末尾 700 字符 ----")
+        println("   " + body3.takeLast(700).replace(Regex("\\s+"), " "))
+
+        println("\n===== 3d. 抓门禁 SPA 的 JS,找它自己的登录/取 token 接口 =====")
+        val assets = Regex("""(?:src|href)=["']([^"']+\.js[^"']*)["']""")
+            .findAll(body3).map { it.groupValues[1] }.distinct().filter { !it.contains("wengine-vpn") }.toList()
+        println("   SPA 脚本(${assets.size}): ${assets.take(5)}")
+        for (a in assets.filter { it.contains("index.") || it.contains("chunk-common") }.take(3)) {
+            // 页面在 .../cser/static/menjin/index.html,相对路径要按它的目录拼
+            val dir = vpnIndex.substringBeforeLast('/')
+            val u = if (a.startsWith("http")) a else "$dir/" + a.trimStart('/')
+            val (c, _, js) = get(u)
+            println("   == $a → code=$c len=${js.length} ==")
+            Regex("""["'`](/cser/[A-Za-z0-9_/\-]{2,60})["'`]""").findAll(js)
+                .map { it.groupValues[1] }.distinct().take(40)
+                .forEach { println("      api: $it") }
+            for (kw in listOf("shfb-token", "token")) {
+                val hit = Regex(".{0,100}" + Regex.escape(kw) + ".{0,120}").find(js)?.value?.replace(Regex("\\s+"), " ")
+                if (hit != null && kw == "shfb-token") println("      ** $kw: $hit")
+            }
+        }
+
+        println("\n===== 3c. 按 main.js 的签名向网关索要门禁 cookie =====")
+        val ts = System.currentTimeMillis()
+        val cookieUrls = listOf(
+            "https://webvpn.dlut.edu.cn/wengine-vpn/cookie?method=get&host=menjin.dlut.edu.cn&scheme=http&path=/cser/static/menjin/index.html&vpn_timestamp=$ts",
+            "https://webvpn.dlut.edu.cn/wengine-vpn/cookie?method=get&host=$enc&scheme=http&path=/cser/static/menjin/index.html&vpn_timestamp=$ts",
+            "https://webvpn.dlut.edu.cn/wengine-vpn/cookie?method=get&host=menjin.dlut.edu.cn&scheme=http&path=/&vpn_timestamp=$ts",
+        )
+        for (u in cookieUrls) {
+            val (c, _, b) = get(u)
+            println("   code=$c len=${b.length} host=${u.substringAfter("host=").substringBefore("&")} path=${u.substringAfter("path=").substringBefore("&")}")
+            if (b.isNotEmpty()) println("      body=${b.replace(Regex("\\s+"), " ").take(500)}")
+        }
+
         println("\n===== 4. POST 设备列表:/http/ 路径 + 302 原样重发(App 的实现方式) =====")
         listPost("$vpnBase/cser/medium/device/listWithRoom", acc, repost = true)
 

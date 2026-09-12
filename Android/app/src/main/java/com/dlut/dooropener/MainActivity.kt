@@ -55,7 +55,10 @@ class MainActivity : ComponentActivity() {
                         onDismissCandidates = vm::dismissCandidates,
                         onWebLogin = {
                             launchingWebLogin = true
-                            startActivity(Intent(this, WebLoginActivity::class.java))
+                            startActivity(
+                                Intent(this, WebLoginActivity::class.java)
+                                    .putExtra(WebLoginActivity.EXTRA_VPN, vm.useVpnEnabled()),
+                            )
                         },
                         onEditCookies = vm::openCookieEditor,
                         onClearWebCookies = vm::clearWebCookies,
