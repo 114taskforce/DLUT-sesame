@@ -336,6 +336,20 @@ static String dumpCookies()
     return out;
 }
 
+// 从 jar 删掉某 host 下指定名字的 cookie(host 匹配同 cookieHeader: 精确或 Domain 后缀),
+// 返回删除条数。用于"先清旧值, 让本次响应必须落地新值"的场景(门禁换票前的旧 shfb-token)。
+static int dropCookieHost(const String& host, const String& name)
+{
+    int dropped = 0;
+    for (int i = 0; i < gCookieCount; ) {
+        if (gCookies[i].name != name || !hostRelated(gCookies[i].host, host)) { i++; continue; }
+        for (int j = i; j < gCookieCount - 1; j++) gCookies[j] = gCookies[j + 1];
+        gCookieCount--;
+        dropped++;
+    }
+    return dropped;
+}
+
 // 丢掉 jar 里的 CAS 会话 cookie(CASTGC / JSESSIONIDCAS)。
 // 会话在服务端失效后, 带着它 CAS 认为"已登录"而不下发带 lt/execution 的登录表单,
 // 账号密码兜底分支就永远走不到 —— 这正是换票/重登时"卡死"的原因。
@@ -347,15 +361,8 @@ static String dumpCookies()
 // 且只在拿到完整响应却确认没有表单(或换不到票)时调用, 网络失败的场景不要动 cookie。
 static int dropCasSession()
 {
-    int dropped = 0;
-    for (int i = 0; i < gCookieCount; ) {
-        bool casSession = (gCookies[i].name == "CASTGC" || gCookies[i].name == "JSESSIONIDCAS") &&
-                          hostRelated(gCookies[i].host, SSO_HOSTNAME);
-        if (!casSession) { i++; continue; }
-        for (int j = i; j < gCookieCount - 1; j++) gCookies[j] = gCookies[j + 1];
-        gCookieCount--;
-        dropped++;
-    }
+    int dropped = dropCookieHost(SSO_HOSTNAME, "CASTGC") +
+                  dropCookieHost(SSO_HOSTNAME, "JSESSIONIDCAS");
     if (dropped) Serial.printf("[Cookie] 丢掉失效的 CAS 会话 cookie %d 条\n", dropped);
     return dropped;
 }
@@ -741,6 +748,10 @@ String campusBody(const String& res) { return getBody(res); }
 String campusCookie(const String& host, const String& name)
 {
     return getCookieValue(host, name);
+}
+int campusDropCookie(const String& host, const String& name)
+{
+    return dropCookieHost(host, name);
 }
 
 bool campusCasTicket(const String& service, String& ticketUrl)

@@ -54,6 +54,10 @@ String campusBody(const String& res);
 // 读 host 下指定 cookie 的值(按 path 最长优先), 不存在返回 ""
 String campusCookie(const String& host, const String& name);
 
+// 从共享 jar 删除某 host 下指定名字的 cookie(host 匹配规则同 campusCookie), 返回删除条数。
+// 门禁换票前用它清掉旧 shfb-token: 否则换票响应若没落地新 cookie, 会把残留旧值当新值用。
+int campusDropCookie(const String& host, const String& name);
+
 // 二次认证兜底: 把浏览器复制的 Cookie 头原文(config.h 的 COOKIE_INPUT)注入共享 jar。
 // 只注入 COOKIE_TRUSTED 白名单里的名字(默认 CASTGC / JSESSIONIDCAS), 作用域
 // sso.dlut.edu.cn + Path=/ —— 全量灌进去会让 CAS 不再下发带 lt/execution 的登录页。

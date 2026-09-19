@@ -41,7 +41,7 @@ extern TaskHandle_t loopTaskHandle;   // 框架 loop 任务句柄(查栈余量�
 // ==================== 周期与时长 ====================
 #define CHECK_INTERVAL   1800000UL   // 30 分钟在线检测
 #define LONG_PRESS_MS    1500        // 按键长按阈值(刷新会话)
-#define PROV_PRESS_MS    8000        // 按键超长按阈值(开配网热点)
+#define PROV_PRESS_MS    3000        // 按键超长按阈值(开配网热点)
 #define PRESS_BOUNCE_MS  30          // 释放沿最短有效按压时长(滤机械抖动)
 #define DOOR_MIN_INTERVAL 1500       // 两次开门请求的最小间隔, 任何触发源共用
 #define MIJIA_GAP         2400       // 门磁两次触发的最小间隔(米家模块会连发)

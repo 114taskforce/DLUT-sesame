@@ -119,6 +119,12 @@ bool doorAcquireToken()
     String ticket;
     String token;
 
+    // 先清掉 jar 里的旧 shfb-token。换票响应若没带新的 Set-Cookie, 不清旧值时下面
+    // campusCookie() 会把残留旧 token 当"刚换到的"返回 —— 静默复用过期会话, 开门时
+    // 被服务端判"用户登录会话超时"(131000)。清掉后, 读到的必然来自本次换票或种子。
+    int stale = campusDropCookie(MENJIN_HOST, "shfb-token");
+    if (stale) Serial.printf("[门禁] 已清掉旧 shfb-token %d 条\n", stale);
+
     if (campusCasTicket(MENJIN_SERVICE, ticket)) {
         Serial.println("    票据: " + ticket);
         // 票据落地: 服务端在此响应中下发 shfb-token
