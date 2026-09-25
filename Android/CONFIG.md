@@ -42,7 +42,7 @@
 | `CAMPUS_USER` | 学号 | 同时是门禁的 `personId` |
 | `CAMPUS_PASS` | 认证密码 | 全项目只有这一处提交账号密码 |
 | `COOKIE_INPUT` | 可留空 | 二次认证兜底的浏览器 Cookie。**不用手填**：App「网页登录」抓到的 Cookie 会随第 3 步同步进设备，存在设备 NVS 里 |
-| `COOKIE_TRUSTED` | `CASTGC JSESSIONIDCAS` | cookie 白名单：只有这里列的名字会被真正注入会话。改它是因为实测发现把 `devInfo`、`recheck_mobile_error_info` 之类整串灌进去，CAS 就不回带 `lt/execution` 的登录页了 |
+| `COOKIE_TRUSTED` | `djsendtime_recheck recheck_mobile_error_info devInfo` | cookie 白名单：只有这里列的名字会被真正注入会话。现在列的是「信任设备」标记——注入后 CAS 走信任设备分支，直接签发票据（不再下发带 `lt/execution` 的登录表单）。App「同步到设备」推来的 cookie 也只含这三个名字 |
 | `WIFI_SSID` / `WIFI_PSWD` | `DLUT-LingShui` / `""` | 校园网是开放网络，密码留空 |
 | `DOOR_DEVICE_CODE` | 如 `DL-LY-107000` | 宿舍门设备编号；不确定就先填任意值，第 3 步 App 会自动查出来同步过去 |
 | `DOOR_PROJECT_CD` / `DOOR_SIGN_SALT` | 不动 | 全校固定值 / 前端硬编码盐 |
@@ -122,8 +122,8 @@ pio device monitor         # 看日志(Ctrl+C 退出)
    - `POST /save` 推 `user/pass/code/cookie/bemfakey/doortopic/cfgtopic/acktopic`；
      - **空值一律不推**，不会覆盖设备上已有的值；
      - 门锁编号留空时，App 先按账号自动查一次再推；
-     - Cookie 只保留 `CASTGC / JSESSIONIDCAS / shfb-token / TGC / route / devInfo` 这几个键
-       （设备端上限 480 字节，其余键推过去也没用）。
+     - Cookie 只保留设备信任标记 `djsendtime_recheck / recheck_mobile_error_info / devInfo`
+       （设备端上限 480 字节；这三个正好对应固件 `COOKIE_TRUSTED` 白名单）。
    - `POST /apply` 让设备立刻用新配置重跑整链认证（最坏几十秒，别关 App）。
 5. 点 **试开门**：设备自己发一次开门请求，服务端响应原文会回显到 App —— 这是核对
    "设备编号对不对 / 这个学号有没有权限"最快的办法。点 **读状态** 可看设备当前的

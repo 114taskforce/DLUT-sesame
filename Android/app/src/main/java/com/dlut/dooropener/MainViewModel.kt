@@ -229,11 +229,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 合并两段信任 cookie, 只留设备用得到的键名: 固件按白名单注入会话(CASTGC/JSESSIONIDCAS),
-     * 换票失败时再按名取 shfb-token。其余键推过去只是占掉 480 字节的上限。
+     * 合并两段信任 cookie, 只留设备用得上的键名: 跳过二次认证靠的就是这三个
+     * (djsendtime_recheck / recheck_mobile_error_info / devInfo), 其余键推过去只是占掉 480 字节的上限。
      */
     private fun trustedCookieForDevice(): String? {
-        val keep = setOf("CASTGC", "JSESSIONIDCAS", "shfb-token", "TGC", "route", "devInfo")
+        val keep = setOf("djsendtime_recheck", "recheck_mobile_error_info", "devInfo")
         val items = listOf(settings.webCookieSso, settings.webCookieMenjin)
             .filter { it.isNotBlank() }
             .flatMap { it.split(';') }

@@ -655,16 +655,22 @@ class DoorClient(
 
     /**
      * 把网页登录保存的 cookie 预置进 jar(固件 login() 开头的 cookieJar=COOKIE_INPUT)。
-     * 默认只补缺(不覆盖 jar 里已有的同名 cookie);网页登录刚回来时用 overwrite=true 显式采纳新会话。
+     * sso 域(信任设备)每次都整组覆盖——跳过二次认证就靠它;
+     * menjin/webvpn 域默认只补缺(不覆盖 jar 里刚建立的会话),网页登录刚回来时传 overwrite=true 采纳新会话。
      */
     private fun preloadWebCookies(overwrite: Boolean = false) {
         val sso = settings.webCookieSso
         val menjin = settings.webCookieMenjin
         if (sso.isNotEmpty()) {
-            // 跳过 JSESSIONIDCAS:CAS 会话 cookie 以 CASTGC 为准,
-            // 预置旧会话号会与服务端新下发的会话号冲突(同名双 cookie 服务端读旧值)
-            loadCookieString(sso, "sso.dlut.edu.cn", skipNames = setOf("JSESSIONIDCAS"), onlyIfMissing = !overwrite)
-            Log.i(TAG, "STEP0 预置 sso 信任 cookie: ${namesOnly(sso)}")
+            // 跳过二次认证靠的是这一整组信任设备 cookie,必须完整带上;唯一的例外是 CASTGC:
+            // 它每次登录都会由服务端重新签发,把上次存下来的那份再带上没有意义(还可能顶掉 jar 里更新的),
+            // 只有网页登录刚回来、这份就是最新的时候(overwrite=true)才连它一起采纳
+            val skip = if (overwrite) emptySet() else setOf("CASTGC")
+            loadCookieString(sso, "sso.dlut.edu.cn", skipNames = skip)
+            Log.i(
+                TAG,
+                "STEP0 预置 sso 信任 cookie${if (skip.isEmpty()) "(完整覆盖)" else "(不含旧 CASTGC)"}: ${namesOnly(sso)}",
+            )
         }
         if (menjin.isNotEmpty()) {
             // 门禁侧这份常是「网页登录」时抓的:校外拿不到新会话时它可能是唯一的会话来源,

@@ -20,22 +20,19 @@
 // 统一身份认证对脚本登录可能弹二次认证(短信/验证码), 表单提交过不去时, 把浏览器
 // 已登录的 cookie 粘到这里绕过去: 浏览器登录 sso.dlut.edu.cn → F12 Network →
 // 任意请求 → 复制整条 Cookie 请求头 → 粘进下面的引号里。
-// 它作为**基础 cookie** 参与会话: 服务端随后返回的 Set-Cookie 继续往它上面加,
-// 同名的就地覆盖(所以 CASTGC 过期后会被新签发的那条替换, 不用手动更新)。
-// CAS 认这个 CASTGC 便直接签发票据, 需要验证码的表单分支根本不会走到。
+// 它作为**基础 cookie** 参与会话: 服务端随后返回的 Set-Cookie 继续往它上面加, 同名的就地覆盖。
 //
-// 注意: 只有下面 COOKIE_TRUSTED 列出的名字会被真正注入会话, 且只作用于
-// sso.dlut.edu.cn —— 粘贴串里的 recheck_mobile_error_info / djsendtime_recheck /
-// devInfo 之类会改变 CAS 对登录页的响应(不再下发带 lt/execution 的表单), 全量灌进去
-// 反而会把原本能用的登录链搞挂。日志里 "白名单外跳过 N 条" 会列出被忽略的名字;
-// 若换票失败, 把需要的名字加进 COOKIE_TRUSTED 再试。
-// 未注入的名字仍可按名取用: 门禁换票失败时 door.cpp 会用串里的 shfb-token 兜底
-// (浏览器里该 cookie 是 HttpOnly 的话, 去 Application → Cookies 里抄)。
+// 注意: 只有下面 COOKIE_TRUSTED 列出的名字会被真正注入会话, 且只作用于 sso.dlut.edu.cn。
+// 现在列的是"信任设备"标记(djsendtime_recheck / recheck_mobile_error_info / devInfo):
+// 注入后 CAS 走信任设备分支——直接签发票据, 不再下发带 lt/execution 的登录表单,
+// 需要该表单的流程要能处理这个分支。App「同步到设备」推来的 cookie 也只含这三个名字。
+// 日志里 "白名单外跳过 N 条" 会列出被忽略的名字; 若换票失败, 调整白名单再试。
+// 未注入的名字仍可按名取用(如手粘串里的 shfb-token, 门禁换票失败时 door.cpp 会兜底)。
 // COOKIE_INPUT 留空 "" = 不使用。
 #define COOKIE_INPUT  ""
 
 // 允许注入会话的 cookie 名(空格分隔, 大小写敏感)
-#define COOKIE_TRUSTED  "CASTGC JSESSIONIDCAS"
+#define COOKIE_TRUSTED  "djsendtime_recheck recheck_mobile_error_info devInfo"
 
 // -------------------- WiFi --------------------
 // DLUT-LingShui 是开放网络, 密码留空即可
